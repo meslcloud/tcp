@@ -50,7 +50,7 @@ else
     exit 1
 fi
 
-#OUT_ALERT "[淇℃伅] 鏇存柊绯荤粺涓紒"
+#OUT_ALERT "[信息] 更新系统中！"
 #if [[ ${release} == "centos" ]]; then
 #    yum makecache
 #    yum install epel-release -y
