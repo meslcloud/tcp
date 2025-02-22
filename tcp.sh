@@ -104,7 +104,6 @@ echo nf_conntrack > /usr/lib/modules-load.d/net.conf
 
 chattr -i /etc/sysctl.conf
 cat > /etc/sysctl.conf << EOF
-# 基础参数
 fs.file-max = 10240000
 net.core.default_qdisc = fq
 net.core.somaxconn = 3240000
@@ -114,8 +113,6 @@ net.ipv4.conf.default.rp_filter = 2
 net.ipv4.ip_default_ttl = 128
 net.ipv4.ip_forward = 1
 net.ipv4.ip_local_port_range = 10240 65535
-
-# TCP协议栈优化
 net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_sack = 0
 net.ipv4.tcp_ecn = 0
@@ -133,13 +130,9 @@ net.ipv4.tcp_mem = 8388608 12582912 16777216
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_window_scaling = 1
-
-# Conntrack优化
 net.netfilter.nf_conntrack_max = 10240000
 net.netfilter.nf_conntrack_tcp_timeout_established = 1200
 net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-
-# 内存管理
 vm.swappiness = 1
 EOF
 cat > /etc/security/limits.conf << EOF
