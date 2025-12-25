@@ -105,7 +105,7 @@ echo nf_conntrack > /usr/lib/modules-load.d/net.conf
 chattr -i /etc/sysctl.conf
 cat > /etc/sysctl.conf << EOF
 fs.file-max = 10240000
-net.core.default_qdisc = fq_pie
+net.core.default_qdisc = fq
 net.core.somaxconn = 3240000
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
