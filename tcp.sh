@@ -156,6 +156,8 @@ net.netfilter.nf_conntrack_tcp_timeout_unacknowledged = 2
 net.netfilter.nf_conntrack_udp_timeout = 2
 net.netfilter.nf_conntrack_udp_timeout_stream = 120
 vm.swappiness = 0
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
 EOF
 cat > /etc/security/limits.conf << EOF
 * soft nofile unlimited
