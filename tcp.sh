@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LANG=C LC_ALL=C
 set -e
 
 CYELLOW="\033[1;33m"; CCYAN="\033[1;36m"; CEND="\033[0m"
