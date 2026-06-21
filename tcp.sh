@@ -1,84 +1,56 @@
 #!/usr/bin/env bash
-echo=echo
-for cmd in echo /bin/echo; do
-    $cmd >/dev/null 2>&1 || continue
-    if ! $cmd -e "" | grep -qE '^-e'; then
-        echo=$cmd
-        break
-    fi
-done
+set -e
 
-CSI=$($echo -e "\033[")
-CEND="${CSI}0m"
-CRED="${CSI}1;31m"
-CYELLOW="${CSI}1;33m"
-CCYAN="${CSI}1;36m"
-
-OUT_ALERT() { echo -e "${CYELLOW}$1${CEND}"; }
-OUT_ERROR() { echo -e "${CRED}$1${CEND}"; }
-OUT_INFO()  { echo -e "${CCYAN}$1${CEND}"; }
-
-if [[ -f /etc/redhat-release ]]; then
-    release="centos"
-elif cat /etc/issue | grep -q -E -i "debian|raspbian"; then
-    release="debian"
-elif cat /etc/issue | grep -q -E -i "ubuntu"; then
-    release="ubuntu"
-elif cat /etc/issue | grep -q -E -i "centos|red hat|redhat"; then
-    release="centos"
-elif cat /proc/version | grep -q -E -i "raspbian|debian"; then
-    release="debian"
-elif cat /proc/version | grep -q -E -i "ubuntu"; then
-    release="ubuntu"
-elif cat /proc/version | grep -q -E -i "centos|red hat|redhat"; then
-    release="centos"
-else
-    OUT_ERROR "[错误] 不支持的操作系统！"
-    exit 1
-fi
+CYELLOW="\033[1;33m"; CCYAN="\033[1;36m"; CEND="\033[0m"
+OUT_ALERT(){ echo -e "${CYELLOW}$1${CEND}"; }
+OUT_INFO(){ echo -e "${CCYAN}$1${CEND}"; }
 
 OUT_ALERT "[信息] 优化性能中！"
-if [[ ${release} == "centos" ]]; then
-    yum remove tuned --autoremove -y
-else
-    apt remove tuned --autoremove -y
-    apt purge irqbalance --autoremove -y    # ← 注意: 删 irqbalance 后务必确认 NIC 多队列 IRQ 已手动钉到 NUMA 本地核
+apt remove tuned --autoremove -y 2>/dev/null || true
+apt purge irqbalance --autoremove -y 2>/dev/null || true   # 删 irqbalance 后记得手动钉 NIC 多队列 IRQ 到 NUMA 本地核
+
+# ---- KSM / ksmtuned (仅 PVE/KVM 宿主存在，纯 Debian 自动跳过) ----
+if systemctl list-unit-files 2>/dev/null | grep -q '^ksmtuned'; then
+    systemctl disable --now ksmtuned 2>/dev/null || true
+    rm -f /etc/systemd/system/ksmtuned.service
+fi
+if [ -w /sys/kernel/mm/ksm/run ]; then
+    echo 2 > /sys/kernel/mm/ksm/run
+fi
+if [ -e /usr/sbin/ksmtuned ]; then
+    chattr -i /usr/sbin/ksmtuned 2>/dev/null || true
+    : > /usr/sbin/ksmtuned
+    chattr +i /usr/sbin/ksmtuned 2>/dev/null || true
 fi
 
-systemctl stop ksmtuned
-systemctl disable --now ksmtuned
-echo 2 > /sys/kernel/mm/ksm/run
-rm -rf /etc/systemd/system/ksmtuned.service
-apt autoremove ksmtuned -y
-touch /usr/sbin/ksmtuned
-chattr +i /usr/sbin/ksmtuned
-
-cat > /etc/systemd/system/disable-transparent-huge-pages.service << EOF
+# ---- 关闭透明大页 ----
+cat > /etc/systemd/system/disable-transparent-huge-pages.service << 'EOF'
 [Unit]
 Description=Disable Transparent Huge Pages (THP)
 DefaultDependencies=no
 After=sysinit.target local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'echo never | tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null'
-ExecStart=/bin/sh -c 'echo never | tee /sys/kernel/mm/transparent_hugepage/defrag > /dev/null'
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
 [Install]
 WantedBy=basic.target
 EOF
-
 systemctl daemon-reload
-systemctl start disable-transparent-huge-pages
-systemctl enable disable-transparent-huge-pages
+systemctl enable --now disable-transparent-huge-pages
 
 OUT_ALERT "[信息] 优化参数中！"
-modprobe nf_conntrack > /dev/null 2>&1
-echo nf_conntrack > /usr/lib/modules-load.d/net.conf
+# ---- nf_conntrack ----
+modprobe nf_conntrack 2>/dev/null || true
+echo nf_conntrack > /etc/modules-load.d/nf_conntrack.conf
 echo "options nf_conntrack hashsize=2621440" > /etc/modprobe.d/nf_conntrack.conf
 
-chattr -i /etc/sysctl.conf
-cat > /etc/sysctl.conf << EOF
+# ---- sysctl 改用 drop-in (Debian 11/12/13 通用) ----
+cat > /etc/sysctl.d/99-network-optimize.conf << 'EOF'
 fs.file-max = 10240000
 fs.nr_open = 4000000
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
 net.core.default_qdisc = fq
 net.core.somaxconn = 65535
 net.ipv4.conf.all.rp_filter = 2
@@ -131,11 +103,16 @@ net.netfilter.nf_conntrack_tcp_timeout_unacknowledged = 60
 net.netfilter.nf_conntrack_udp_timeout = 30
 net.netfilter.nf_conntrack_udp_timeout_stream = 120
 vm.swappiness = 0
-fs.inotify.max_user_watches = 524288
-fs.inotify.max_user_instances = 1024
 EOF
 
-cat > /etc/security/limits.conf << EOF
+# ---- 按内存动态计算 tcp_mem 追加 ----
+mems=$(free --bytes | awk '/Mem/{print $2}')
+page=$(getconf PAGESIZE)
+size=$((mems/page))
+echo "net.ipv4.tcp_mem = $((size/100*12)) $((size/100*50)) $((size/100*70))" >> /etc/sysctl.d/99-network-optimize.conf
+
+# ---- limits ----
+cat > /etc/security/limits.conf << 'EOF'
 * soft nofile 2000000
 * hard nofile 2000000
 * soft nproc unlimited
@@ -146,19 +123,17 @@ root soft nproc unlimited
 root hard nproc unlimited
 EOF
 
-cat > /etc/systemd/journald.conf << EOF
+# ---- journald 用 drop-in，不覆盖主配置 ----
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/optimize.conf << 'EOF'
 [Journal]
 SystemMaxUse=384M
 SystemMaxFileSize=128M
 ForwardToSyslog=no
 EOF
+systemctl restart systemd-journald
 
-mems=$(free --bytes | grep Mem | awk '{print $2}')
-page=$(getconf PAGESIZE)
-size=$((mems/page))
-echo "net.ipv4.tcp_mem = $((size/100*12)) $((size/100*50)) $((size/100*70))" >> /etc/sysctl.conf
-sort -n /etc/sysctl.conf -o /etc/sysctl.conf
-sysctl -p > /dev/null 2>&1
+# ---- 加载所有 sysctl drop-in ----
+sysctl --system > /dev/null 2>&1
 
 OUT_INFO "[信息] 优化完成！"
-exit 0
